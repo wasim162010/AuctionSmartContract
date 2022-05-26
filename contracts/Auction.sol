@@ -1,35 +1,28 @@
-// // SPDX-License-Identifier: MIT
-// pragma solidity >=0.4.22 <0.9.0;
-
-// contract Auction {
-//   constructor() public {
-//   }
-// }
-
 
 pragma solidity 0.8.11;
 
-// import './CrosToken.sol';
+
 import "./ERC20.sol";
 
 contract Auction {
     // static
     address public owner;
-    uint public bidIncrement;
-    uint public startBlock;
-    uint public endBlock;
+  //  uint public startBlock;
+   // uint public endBlock;
     address public asset;
     // state
     bool public canceled;
     uint public highestBindingBid;
     address public highestBidder;
-    mapping(address => uint256) public fundsByBidder;
     bool ownerHasWithdrawn;
-    // tests
+  
     mapping(address => uint256) public bids;
     address public winner;
     uint public startTime;
     uint public endTime;
+    ERC20 public token;
+
+    mapping(address => uint256) public balanceOf;
 
     event LogBid(address bidder, uint bid, address highestBidder, uint highestBid, uint highestBindingBid);
     event LogWithdrawal(address withdrawer, address withdrawalAccount, uint amount);
@@ -46,12 +39,12 @@ contract Auction {
     }
 
     modifier allowAfterStart {
-        require(!(block.timestamp < startBlock));
+        require(!(block.timestamp < startTime));
         _;
     }
 
     modifier notAfterEnd { 
-        require(!(block.timestamp > endBlock));
+        require(!(block.timestamp > endTime));
         _;
     }
 
@@ -63,7 +56,7 @@ contract Auction {
 
     modifier onlyEndedOrCanceled {
         //if (block.number < endBlock && !canceled) throw;
-        require(block.number < endBlock && !canceled);
+        require(block.number < endTime && !canceled);
         _;
     }
     
@@ -73,10 +66,12 @@ contract Auction {
         if (startTime < block.number) revert("start time is greater then block.numner");
         if (asset == address(0)) revert();
 
+        token = ERC20(_asset);
+
         owner = msg.sender;
         asset = _asset;
-        startBlock = _startTime;
-        endBlock = _endTime;
+        startTime = _startTime;
+        endTime = _endTime;
 
     }
 
@@ -86,10 +81,10 @@ contract Auction {
          external view
         returns (uint)
     {
-        return fundsByBidder[highestBidder];
+        return bids[highestBidder];
     }
 
-    function bid(address bidder, uint256 value) 
+    function bid() 
         external
         payable
         allowAfterStart //onlyAfterStart
@@ -102,9 +97,12 @@ contract Auction {
         // if (msg.value == 0) throw;
         require(msg.value !=0);
 
+        bids[msg.sender] = msg.value;
+ 
         // calculate the user's total bid based on the current amount they've sent to the contract
         // plus whatever has been sent with this transaction
-        uint newBid = fundsByBidder[msg.sender] + msg.value;
+        uint newBid = bids[msg.sender] + msg.value;
+        balanceOf[msg.sender] += msg.value;
         //CrosToken token = CrosToken(auction.tokenAddress);
           //  require(token.transferFrom(msg.sender, address(this), amount));
 
@@ -113,11 +111,11 @@ contract Auction {
        // if (newBid <= highestBindingBid) throw;
          require(newBid > highestBindingBid);
 
-        // grab the previous highest bid (before updating fundsByBidder, in case msg.sender is the
+        // grab the previous highest bid (before updating bids, in case msg.sender is the
         // highestBidder and is just increasing their maximum bid).
-        uint highestBid = fundsByBidder[highestBidder];
+        uint highestBid = bids[highestBidder];
 
-        fundsByBidder[msg.sender] = newBid;
+        bids[msg.sender] = newBid;
 
         if (newBid <= highestBid) {
             // if the user has overbid the highestBindingBid but not the highestBid, we simply
@@ -126,7 +124,7 @@ contract Auction {
             // note that this case is impossible if msg.sender == highestBidder because you can never
             // bid less ETH than you've already bid.
 
-            highestBindingBid = min(newBid + bidIncrement, highestBid);
+            highestBindingBid = min(newBid, highestBid);
         } else {
             // if msg.sender is already the highest bidder, they must simply be wanting to raise
             // their maximum bid, in which case we shouldn't increase the highestBindingBid.
@@ -136,7 +134,7 @@ contract Auction {
 
             if (msg.sender != highestBidder) {
                 highestBidder = msg.sender;
-                highestBindingBid = min(newBid, highestBid + bidIncrement);
+                highestBindingBid = min(newBid, highestBid);
             }
             highestBid = newBid;
         }
@@ -167,6 +165,25 @@ contract Auction {
         return true;
     }
 
+    function resolve() external {
+      
+      require(block.timestamp >= endTime);
+
+      uint256 _bal = token.balanceOf(address(this));
+      if (highestBidder == address(0)) {
+          require(token.transfer(owner, _bal));
+      } else {
+          // transfer tokens to high bidder
+          require(token.transfer(highestBidder, _bal));
+
+          balanceOf[owner] += balanceOf[highestBidder];
+          balanceOf[highestBidder] = 0;
+
+         // highBidder = 0;
+      }
+  }
+
+
     function withdraw()
         external
         onlyEndedOrCanceled
@@ -178,7 +195,7 @@ contract Auction {
         if (canceled) {
             // if the auction was canceled, everyone should simply be allowed to withdraw their funds
             withdrawalAccount = msg.sender;
-            withdrawalAmount = fundsByBidder[withdrawalAccount];
+            withdrawalAmount = bids[withdrawalAccount];
 
         } else {
             // the auction finished without being canceled
@@ -194,23 +211,23 @@ contract Auction {
                 // highest bid and the highestBindingBid
                 withdrawalAccount = highestBidder;
                 if (ownerHasWithdrawn) {
-                    withdrawalAmount = fundsByBidder[highestBidder];
+                    withdrawalAmount = bids[highestBidder];
                 } else {
-                    withdrawalAmount = fundsByBidder[highestBidder] - highestBindingBid;
+                    withdrawalAmount = bids[highestBidder] - highestBindingBid;
                 }
 
             } else {
                 // anyone who participated but did not win the auction should be allowed to withdraw
                 // the full amount of their funds
                 withdrawalAccount = msg.sender;
-                withdrawalAmount = fundsByBidder[withdrawalAccount];
+                withdrawalAmount = bids[withdrawalAccount];
             }
         }
 
         // if (withdrawalAmount == 0) throw;
         require(withdrawalAmount != 0);
 
-        fundsByBidder[withdrawalAccount] -= withdrawalAmount;
+        bids[withdrawalAccount] -= withdrawalAmount;
 
         // send the funds
        // if (!msg.sender.send(withdrawalAmount)) throw;
